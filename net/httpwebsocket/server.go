@@ -22,11 +22,21 @@ var (
 func StartServer(n Noder) {
 	common.SetNode(n)
 	ledger.DefaultLedger.Blockchain.BCEvents.Subscribe(events.EventBlockPersistCompleted, SendBlock2WSclient)
+	ledger.DefaultLedger.Blockchain.BCEvents.Subscribe(events.EventChatMessage, SendChatMessage2WSclient)
 	go func() {
 		ws = websocket.InitWsServer(common.CheckAccessToken)
 		ws.Start()
 	}()
 }
+
+func SendChatMessage2WSclient(v interface{}) {
+	if Parameters.HttpWsPort != 0 {
+		go func() {
+			PushChatMessage(v)
+		}()
+	}
+}
+
 func SendBlock2WSclient(v interface{}) {
 	if Parameters.HttpWsPort != 0 && pushBlockFlag {
 		go func() {
@@ -83,7 +93,7 @@ func PushSmartCodeInvokeResult(txHash Uint256, errcode int64, result interface{}
 	}
 	resp := common.ResponsePack(Err.SUCCESS)
 	var Result = make(map[string]interface{})
-	txHashStr := ToHexString(txHash.ToArray())
+	txHashStr := BytesToHexString(txHash.ToArray())
 	Result["TxHash"] = txHashStr
 	Result["ExecResult"] = result
 
@@ -102,7 +112,7 @@ func PushBlock(v interface{}) {
 		if pushRawBlockFlag {
 			w := bytes.NewBuffer(nil)
 			block.Serialize(w)
-			resp["Result"] = ToHexString(w.Bytes())
+			resp["Result"] = BytesToHexString(w.Bytes())
 		} else {
 			resp["Result"] = common.GetBlockInfo(block)
 		}
@@ -120,6 +130,18 @@ func PushBlockTransactions(v interface{}) {
 			resp["Result"] = common.GetBlockTransactions(block)
 		}
 		resp["Action"] = "sendblocktransactions"
+		ws.PushResult(resp)
+	}
+}
+
+func PushChatMessage(v interface{}) {
+	if ws == nil {
+		return
+	}
+	resp := common.ResponsePack(Err.SUCCESS)
+	if chatMessage, ok := v.(string); ok {
+		resp["Result"] = chatMessage
+		resp["Action"] = "pushchatmessage"
 		ws.PushResult(resp)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"DNA/core/transaction/payload"
 	va "DNA/core/validation"
 	. "DNA/errors"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -19,6 +20,7 @@ type TXNPool struct {
 	txnList       map[common.Uint256]*transaction.Transaction // transaction which have been verifyed will put into this map
 	issueSummary  map[common.Uint256]common.Fixed64           // transaction which pass the verify will summary the amout to this map
 	inputUTXOList map[string]*transaction.Transaction         // transaction which pass the verify will add the UTXO to this map
+	lockAssetList map[string]struct{}                         // keep only one copy for each program hash and asset ID pair
 }
 
 func (this *TXNPool) init() {
@@ -28,11 +30,12 @@ func (this *TXNPool) init() {
 	this.inputUTXOList = make(map[string]*transaction.Transaction)
 	this.issueSummary = make(map[common.Uint256]common.Fixed64)
 	this.txnList = make(map[common.Uint256]*transaction.Transaction)
+	this.lockAssetList = make(map[string]struct{})
 }
 
 //append transaction to txnpool when check ok.
 //1.check transaction. 2.check with ledger(db) 3.check with pool
-func (this *TXNPool) AppendTxnPool(txn *transaction.Transaction) ErrCode {
+func (this *TXNPool) AppendTxnPool(txn *transaction.Transaction, poolVerify bool) ErrCode {
 	//verify transaction with Concurrency
 	if errCode := va.VerifyTransaction(txn); errCode != ErrNoError {
 		log.Info("Transaction verification failed", txn.Hash())
@@ -42,10 +45,14 @@ func (this *TXNPool) AppendTxnPool(txn *transaction.Transaction) ErrCode {
 		log.Info("Transaction verification with ledger failed", txn.Hash())
 		return errCode
 	}
-	//verify transaction by pool with lock
-	if ok := this.verifyTransactionWithTxnPool(txn); !ok {
-		return ErrSummaryAsset
+	if poolVerify {
+		//verify transaction by pool with lock
+		if errCode := this.verifyTransactionWithTxnPool(txn); errCode != ErrNoError {
+			log.Info("Transaction verification with transaction pool failed", txn.Hash())
+			return errCode
+		}
 	}
+
 	//add the transaction to process scope
 	this.addtxnList(txn)
 	return ErrNoError
@@ -78,6 +85,7 @@ func (this *TXNPool) GetTxnPool(byCount bool) map[common.Uint256]*transaction.Tr
 func (this *TXNPool) CleanSubmittedTransactions(block *ledger.Block) error {
 	this.cleanTransactionList(block.Transactions)
 	this.cleanUTXOList(block.Transactions)
+	this.cleanLockedAssetList(block.Transactions)
 	this.cleanIssueSummary(block.Transactions)
 	return nil
 }
@@ -90,20 +98,38 @@ func (this *TXNPool) GetTransaction(hash common.Uint256) *transaction.Transactio
 }
 
 //verify transaction with txnpool
-func (this *TXNPool) verifyTransactionWithTxnPool(txn *transaction.Transaction) bool {
-	//check weather have duplicate UTXO input,if occurs duplicate, just keep the latest txn.
-	ok, duplicateTxn := this.apendToUTXOPool(txn)
-	if !ok && duplicateTxn != nil {
-		log.Info(fmt.Sprintf("txn=%x duplicateTxn UTXO occurs with txn in pool=%x,keep the latest one.", txn.Hash(), duplicateTxn.Hash()))
-		this.removeTransaction(duplicateTxn)
+func (this *TXNPool) verifyTransactionWithTxnPool(txn *transaction.Transaction) ErrCode {
+	// check if the transaction includes double spent UTXO inputs
+	if err := this.apendToUTXOPool(txn); err != nil {
+		log.Info(err)
+		return ErrDoubleSpend
+	}
+	// check if exist duplicate LockAsset transactions in a block
+	if err := this.checkDuplicateLockAsset(txn); err != nil {
+		log.Info(err)
+		return ErrDuplicateLockAsset
 	}
 	//check issue transaction weather occur exceed issue range.
 	if ok := this.summaryAssetIssueAmount(txn); !ok {
 		log.Info(fmt.Sprintf("Check summary Asset Issue Amount failed with txn=%x", txn.Hash()))
 		this.removeTransaction(txn)
-		return false
+		return ErrSummaryAsset
 	}
-	return true
+
+	return ErrNoError
+}
+
+func (this *TXNPool) checkDuplicateLockAsset(txn *transaction.Transaction) error {
+	if txn.TxType == transaction.LockAsset {
+		lockAssetPayload := txn.Payload.(*payload.LockAsset)
+		str := lockAssetPayload.ToString()
+		if _, ok := this.lockAssetList[str]; ok {
+			return errors.New("duplicated locking asset detected")
+		}
+		this.lockAssetList[str] = struct{}{}
+	}
+
+	return nil
 }
 
 //remove from associated map
@@ -130,19 +156,25 @@ func (this *TXNPool) removeTransaction(txn *transaction.Transaction) {
 }
 
 //check and add to utxo list pool
-func (this *TXNPool) apendToUTXOPool(txn *transaction.Transaction) (bool, *transaction.Transaction) {
+func (this *TXNPool) apendToUTXOPool(txn *transaction.Transaction) error {
 	reference, err := txn.GetReference()
 	if err != nil {
-		return false, nil
+		return err
 	}
-	for k, _ := range reference {
-		t := this.getInputUTXOList(k)
-		if t != nil {
-			return false, t
+	inputs := []*transaction.UTXOTxInput{}
+	for k := range reference {
+		if txn := this.getInputUTXOList(k); txn != nil {
+			return errors.New(fmt.Sprintf("double spent UTXO inputs detected, "+
+				"transaction hash: %x, input: %s, index: %s",
+				txn.Hash(), k.ToString()[:64], k.ToString()[64:]))
 		}
-		this.addInputUTXOList(txn, k)
+		inputs = append(inputs, k)
 	}
-	return true, nil
+	for _, v := range inputs {
+		this.addInputUTXOList(txn, v)
+	}
+
+	return nil
 }
 
 //clean txnpool utxo map
@@ -151,6 +183,15 @@ func (this *TXNPool) cleanUTXOList(txs []*transaction.Transaction) {
 		inputUtxos, _ := txn.GetReference()
 		for Utxoinput, _ := range inputUtxos {
 			this.delInputUTXOList(Utxoinput)
+		}
+	}
+}
+
+func (this *TXNPool) cleanLockedAssetList(txs []*transaction.Transaction) {
+	for _, txn := range txs {
+		if txn.TxType == transaction.LockAsset {
+			lockAssetPayload := txn.Payload.(*payload.LockAsset)
+			delete(this.lockAssetList, lockAssetPayload.ToString())
 		}
 	}
 }

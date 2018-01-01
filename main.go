@@ -1,6 +1,10 @@
 package main
 
 import (
+	"os"
+	"runtime"
+	"time"
+
 	"DNA/account"
 	"DNA/common/config"
 	"DNA/common/log"
@@ -11,13 +15,10 @@ import (
 	"DNA/crypto"
 	"DNA/net"
 	"DNA/net/httpjsonrpc"
+	"DNA/net/httpnodeinfo"
 	"DNA/net/httprestful"
 	"DNA/net/httpwebsocket"
-	"DNA/net/httpnodeinfo"
 	"DNA/net/protocol"
-	"os"
-	"runtime"
-	"time"
 )
 
 const (
@@ -37,6 +38,7 @@ func init() {
 }
 
 func main() {
+	var client account.Client
 	var acct *account.Account
 	var blockChain *ledger.Blockchain
 	var err error
@@ -60,21 +62,8 @@ func main() {
 	transaction.TxStore = ledger.DefaultLedger.Store
 	crypto.SetAlg(config.Parameters.EncryptAlg)
 
-	log.Info("1. Open the account")
-	client := account.GetClient()
-	if client == nil {
-		log.Fatal("Can't get local account.")
-		goto ERROR
-	}
-	acct, err = client.GetDefaultAccount()
-	if err != nil {
-		log.Fatal(err)
-		goto ERROR
-	}
-	log.Debug("The Node's PublicKey ", acct.PublicKey)
+	log.Info("1. BlockChain init")
 	ledger.StandbyBookKeepers = account.GetBookKeepers()
-
-	log.Info("3. BlockChain init")
 	blockChain, err = ledger.NewBlockchainWithGenesisBlock(ledger.StandbyBookKeepers)
 	if err != nil {
 		log.Fatal(err, "  BlockChain generate failed")
@@ -82,16 +71,39 @@ func main() {
 	}
 	ledger.DefaultLedger.Blockchain = blockChain
 
-	log.Info("4. Start the P2P networks")
-	// Don't need two return value.
+	if protocol.DATANODENAME == config.Parameters.NodeType {
+		// Generate a new account for data node
+		acct, err = account.NewAccount()
+		if err != nil {
+			log.Fatal("Can't create local account.")
+			goto ERROR
+		}
+	} else {
+		log.Info("2. Open the account")
+		client = account.GetClient()
+		if client == nil {
+			log.Fatal("Can't get local account.")
+			goto ERROR
+		}
+		acct, err = client.GetDefaultAccount()
+		if err != nil {
+			log.Fatal(err)
+			goto ERROR
+		}
+		// expose wallet to httpjson interface
+		httpjsonrpc.Wallet = client
+	}
+	log.Info("The Node's PublicKey ", acct.PublicKey)
+
+	log.Info("3. Start the P2P networks")
 	noder = net.StartProtocol(acct.PublicKey)
 	httpjsonrpc.RegistRpcNode(noder)
-	time.Sleep(20 * time.Second)
+	time.Sleep(10 * time.Second)
 	noder.SyncNodeHeight()
 	noder.WaitForFourPeersStart()
 	noder.WaitForSyncBlkFinish()
-	if protocol.SERVICENODENAME != config.Parameters.NodeType {
-		log.Info("5. Start DBFT Services")
+	if protocol.VERIFYNODENAME == config.Parameters.NodeType {
+		log.Info("4. Start DBFT Services")
 		dbftServices := dbft.NewDbftService(client, "logdbft", noder)
 		httpjsonrpc.RegistDbftService(dbftServices)
 		go dbftServices.Start()
@@ -100,13 +112,11 @@ func main() {
 
 	log.Info("--Start the RPC interface")
 	go httpjsonrpc.StartRPCServer()
-	go httpjsonrpc.StartLocalServer()
 	go httprestful.StartServer(noder)
 	go httpwebsocket.StartServer(noder)
 	if config.Parameters.HttpInfoStart {
 		go httpnodeinfo.StartServer(noder)
 	}
-
 
 	for {
 		time.Sleep(dbft.GenBlockTime)

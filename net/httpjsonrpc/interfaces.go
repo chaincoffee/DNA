@@ -1,13 +1,6 @@
 package httpjsonrpc
 
 import (
-	"DNA/account"
-	. "DNA/common"
-	"DNA/common/config"
-	"DNA/common/log"
-	"DNA/core/ledger"
-	tx "DNA/core/transaction"
-	. "DNA/errors"
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,7 +8,20 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"strconv"
+	"time"
+
+	"DNA/account"
+	. "DNA/common"
+	"DNA/common/config"
+	"DNA/common/log"
+	"DNA/core/ledger"
+	"DNA/core/signature"
+	tx "DNA/core/transaction"
+	. "DNA/errors"
+	"DNA/events"
+	"DNA/sdk"
+
+	"github.com/mitchellh/go-homedir"
 )
 
 const (
@@ -33,14 +39,14 @@ func TransArryByteToHexString(ptx *tx.Transaction) *Transactions {
 	trans.Attributes = make([]TxAttributeInfo, len(ptx.Attributes))
 	for _, v := range ptx.Attributes {
 		trans.Attributes[n].Usage = v.Usage
-		trans.Attributes[n].Data = ToHexString(v.Data)
+		trans.Attributes[n].Data = BytesToHexString(v.Data)
 		n++
 	}
 
 	n = 0
 	trans.UTXOInputs = make([]UTXOTxInputInfo, len(ptx.UTXOInputs))
 	for _, v := range ptx.UTXOInputs {
-		trans.UTXOInputs[n].ReferTxID = ToHexString(v.ReferTxID.ToArray())
+		trans.UTXOInputs[n].ReferTxID = BytesToHexString(v.ReferTxID.ToArrayReverse())
 		trans.UTXOInputs[n].ReferTxOutputIndex = v.ReferTxOutputIndex
 		n++
 	}
@@ -48,26 +54,27 @@ func TransArryByteToHexString(ptx *tx.Transaction) *Transactions {
 	n = 0
 	trans.BalanceInputs = make([]BalanceTxInputInfo, len(ptx.BalanceInputs))
 	for _, v := range ptx.BalanceInputs {
-		trans.BalanceInputs[n].AssetID = ToHexString(v.AssetID.ToArray())
+		trans.BalanceInputs[n].AssetID = BytesToHexString(v.AssetID.ToArrayReverse())
 		trans.BalanceInputs[n].Value = v.Value
-		trans.BalanceInputs[n].ProgramHash = ToHexString(v.ProgramHash.ToArray())
+		trans.BalanceInputs[n].ProgramHash = BytesToHexString(v.ProgramHash.ToArrayReverse())
 		n++
 	}
 
 	n = 0
 	trans.Outputs = make([]TxoutputInfo, len(ptx.Outputs))
 	for _, v := range ptx.Outputs {
-		trans.Outputs[n].AssetID = ToHexString(v.AssetID.ToArray())
-		trans.Outputs[n].Value = v.Value
-		trans.Outputs[n].ProgramHash = ToHexString(v.ProgramHash.ToArray())
+		trans.Outputs[n].AssetID = BytesToHexString(v.AssetID.ToArrayReverse())
+		trans.Outputs[n].Value = v.Value.String()
+		address, _ := v.ProgramHash.ToAddress()
+		trans.Outputs[n].Address = address
 		n++
 	}
 
 	n = 0
 	trans.Programs = make([]ProgramInfo, len(ptx.Programs))
 	for _, v := range ptx.Programs {
-		trans.Programs[n].Code = ToHexString(v.Code)
-		trans.Programs[n].Parameter = ToHexString(v.Parameter)
+		trans.Programs[n].Code = BytesToHexString(v.Code)
+		trans.Programs[n].Parameter = BytesToHexString(v.Parameter)
 		n++
 	}
 
@@ -77,9 +84,10 @@ func TransArryByteToHexString(ptx *tx.Transaction) *Transactions {
 		trans.AssetOutputs[n].Key = k
 		trans.AssetOutputs[n].Txout = make([]TxoutputInfo, len(v))
 		for m := 0; m < len(v); m++ {
-			trans.AssetOutputs[n].Txout[m].AssetID = ToHexString(v[m].AssetID.ToArray())
-			trans.AssetOutputs[n].Txout[m].Value = v[m].Value
-			trans.AssetOutputs[n].Txout[m].ProgramHash = ToHexString(v[m].ProgramHash.ToArray())
+			trans.AssetOutputs[n].Txout[m].AssetID = BytesToHexString(v[m].AssetID.ToArrayReverse())
+			trans.AssetOutputs[n].Txout[m].Value = v[m].Value.String()
+			address, _ := v[m].ProgramHash.ToAddress()
+			trans.AssetOutputs[n].Txout[m].Address = address
 		}
 		n += 1
 	}
@@ -100,8 +108,8 @@ func TransArryByteToHexString(ptx *tx.Transaction) *Transactions {
 		n += 1
 	}
 
-	mhash := ptx.Hash()
-	trans.Hash = ToHexString(mhash.ToArray())
+	mHash := ptx.Hash()
+	trans.Hash = BytesToHexString(mHash.ToArrayReverse())
 
 	return trans
 }
@@ -114,7 +122,7 @@ func getCurrentDirectory() string {
 }
 func getBestBlockHash(params []interface{}) map[string]interface{} {
 	hash := ledger.DefaultLedger.Blockchain.CurrentBlockHash()
-	return DnaRpc(ToHexString(hash.ToArray()))
+	return DnaRpc(BytesToHexString(hash.ToArrayReverse()))
 }
 
 // Input JSON string examples for getblock method as following:
@@ -137,7 +145,7 @@ func getBlock(params []interface{}) map[string]interface{} {
 	// block hash
 	case string:
 		str := params[0].(string)
-		hex, err := hex.DecodeString(str)
+		hex, err := HexStringToBytesReverse(str)
 		if err != nil {
 			return DnaRpcInvalidParameter
 		}
@@ -155,17 +163,17 @@ func getBlock(params []interface{}) map[string]interface{} {
 
 	blockHead := &BlockHead{
 		Version:          block.Blockdata.Version,
-		PrevBlockHash:    ToHexString(block.Blockdata.PrevBlockHash.ToArray()),
-		TransactionsRoot: ToHexString(block.Blockdata.TransactionsRoot.ToArray()),
+		PrevBlockHash:    BytesToHexString(block.Blockdata.PrevBlockHash.ToArrayReverse()),
+		TransactionsRoot: BytesToHexString(block.Blockdata.TransactionsRoot.ToArrayReverse()),
 		Timestamp:        block.Blockdata.Timestamp,
 		Height:           block.Blockdata.Height,
 		ConsensusData:    block.Blockdata.ConsensusData,
-		NextBookKeeper:   ToHexString(block.Blockdata.NextBookKeeper.ToArray()),
+		NextBookKeeper:   BytesToHexString(block.Blockdata.NextBookKeeper.ToArrayReverse()),
 		Program: ProgramInfo{
-			Code:      ToHexString(block.Blockdata.Program.Code),
-			Parameter: ToHexString(block.Blockdata.Program.Parameter),
+			Code:      BytesToHexString(block.Blockdata.Program.Code),
+			Parameter: BytesToHexString(block.Blockdata.Program.Parameter),
 		},
-		Hash: ToHexString(hash.ToArray()),
+		Hash: BytesToHexString(hash.ToArrayReverse()),
 	}
 
 	trans := make([]*Transactions, len(block.Transactions))
@@ -174,7 +182,7 @@ func getBlock(params []interface{}) map[string]interface{} {
 	}
 
 	b := BlockInfo{
-		Hash:         ToHexString(hash.ToArray()),
+		Hash:         BytesToHexString(hash.ToArrayReverse()),
 		BlockData:    blockHead,
 		Transactions: trans,
 	}
@@ -198,7 +206,7 @@ func getBlockHash(params []interface{}) map[string]interface{} {
 		if err != nil {
 			return DnaRpcUnknownBlock
 		}
-		return DnaRpc(fmt.Sprintf("%016x", hash))
+		return DnaRpc(BytesToHexString(hash.ToArrayReverse()))
 	default:
 		return DnaRpcInvalidParameter
 	}
@@ -229,7 +237,7 @@ func getRawTransaction(params []interface{}) map[string]interface{} {
 	switch params[0].(type) {
 	case string:
 		str := params[0].(string)
-		hex, err := hex.DecodeString(str)
+		hex, err := HexStringToBytesReverse(str)
 		if err != nil {
 			return DnaRpcInvalidParameter
 		}
@@ -259,7 +267,7 @@ func sendRawTransaction(params []interface{}) map[string]interface{} {
 	switch params[0].(type) {
 	case string:
 		str := params[0].(string)
-		hex, err := hex.DecodeString(str)
+		hex, err := HexStringToBytes(str)
 		if err != nil {
 			return DnaRpcInvalidParameter
 		}
@@ -269,108 +277,12 @@ func sendRawTransaction(params []interface{}) map[string]interface{} {
 		}
 		hash = txn.Hash()
 		if errCode := VerifyAndSendTx(&txn); errCode != ErrNoError {
-			return DnaRpcInternalError
+			return DnaRpc(errCode.Error())
 		}
 	default:
 		return DnaRpcInvalidParameter
 	}
-	return DnaRpc(ToHexString(hash.ToArray()))
-}
-
-func getUnspendOutput(params []interface{}) map[string]interface{} {
-	if len(params) < 2 {
-		return DnaRpcNil
-	}
-	var programHash Uint160
-	var assetHash Uint256
-	switch params[0].(type) {
-	case string:
-		str := params[0].(string)
-		hex, err := hex.DecodeString(str)
-		if err != nil {
-			return DnaRpcInvalidParameter
-		}
-		if err := programHash.Deserialize(bytes.NewReader(hex)); err != nil {
-			return DnaRpcInvalidHash
-		}
-	default:
-		return DnaRpcInvalidParameter
-	}
-
-	switch params[1].(type) {
-	case string:
-		str := params[1].(string)
-		hex, err := hex.DecodeString(str)
-		if err != nil {
-			return DnaRpcInvalidParameter
-		}
-		if err := assetHash.Deserialize(bytes.NewReader(hex)); err != nil {
-			return DnaRpcInvalidHash
-		}
-	default:
-		return DnaRpcInvalidParameter
-	}
-	type TxOutputInfo struct {
-		AssetID     string
-		Value       int64
-		ProgramHash string
-	}
-	outputs := make(map[string]*TxOutputInfo)
-	height := ledger.DefaultLedger.GetLocalBlockChainHeight()
-	var i uint32
-	// construct global UTXO table
-	for i = 0; i <= height; i++ {
-		block, err := ledger.DefaultLedger.GetBlockWithHeight(i)
-		if err != nil {
-			return DnaRpcInternalError
-		}
-		// skip the bookkeeping transaction
-		for _, t := range block.Transactions[1:] {
-			// skip the register transaction
-			if t.TxType == tx.RegisterAsset {
-				continue
-			}
-			txHash := t.Hash()
-			txHashHex := ToHexString(txHash.ToArray())
-			for i, output := range t.Outputs {
-				if output.AssetID.CompareTo(assetHash) == 0 &&
-					output.ProgramHash.CompareTo(programHash) == 0 {
-					key := txHashHex + ":" + strconv.Itoa(i)
-					asset := ToHexString(output.AssetID.ToArray())
-					pHash := ToHexString(output.ProgramHash.ToArray())
-					value := int64(output.Value)
-					info := &TxOutputInfo{
-						asset,
-						value,
-						pHash,
-					}
-					outputs[key] = info
-				}
-			}
-		}
-	}
-	// delete spent output from global UTXO table
-	height = ledger.DefaultLedger.GetLocalBlockChainHeight()
-	for i = 0; i <= height; i++ {
-		block, err := ledger.DefaultLedger.GetBlockWithHeight(i)
-		if err != nil {
-			return DnaRpcInternalError
-		}
-		// skip the bookkeeping transaction
-		for _, t := range block.Transactions[1:] {
-			// skip the register transaction
-			if t.TxType == tx.RegisterAsset {
-				continue
-			}
-			for _, input := range t.UTXOInputs {
-				refer := ToHexString(input.ReferTxID.ToArray())
-				index := strconv.Itoa(int(input.ReferTxOutputIndex))
-				key := refer + ":" + index
-				delete(outputs, key)
-			}
-		}
-	}
-	return DnaRpc(outputs)
+	return DnaRpc(BytesToHexString(hash.ToArrayReverse()))
 }
 
 func getTxout(params []interface{}) map[string]interface{} {
@@ -387,7 +299,7 @@ func submitBlock(params []interface{}) map[string]interface{} {
 	switch params[0].(type) {
 	case string:
 		str := params[0].(string)
-		hex, _ := hex.DecodeString(str)
+		hex, _ := HexStringToBytes(str)
 		var block ledger.Block
 		if err := block.Deserialize(bytes.NewReader(hex)); err != nil {
 			return DnaRpcInvalidBlock
@@ -469,7 +381,7 @@ func sendSampleTransaction(params []interface{}) map[string]interface{} {
 			}
 		}
 		for i := 0; i < num; i++ {
-			regTx := NewRegTx(ToHexString(rbuf), i, admin, issuer)
+			regTx := NewRegTx(BytesToHexString(rbuf), i, admin, issuer)
 			SignTx(admin, regTx)
 			VerifyAndSendTx(regTx)
 		}
@@ -538,7 +450,7 @@ func regDataFile(params []interface{}) map[string]interface{} {
 	switch params[0].(type) {
 	case string:
 		str := params[0].(string)
-		hex, err := hex.DecodeString(str)
+		hex, err := HexStringToBytes(str)
 		if err != nil {
 			return DnaRpcInvalidParameter
 		}
@@ -554,7 +466,7 @@ func regDataFile(params []interface{}) map[string]interface{} {
 	default:
 		return DnaRpcInvalidParameter
 	}
-	return DnaRpc(ToHexString(hash.ToArray()))
+	return DnaRpc(BytesToHexString(hash.ToArrayReverse()))
 }
 
 func catDataRecord(params []interface{}) map[string]interface{} {
@@ -564,7 +476,7 @@ func catDataRecord(params []interface{}) map[string]interface{} {
 	switch params[0].(type) {
 	case string:
 		str := params[0].(string)
-		b, err := hex.DecodeString(str)
+		b, err := HexStringToBytesReverse(str)
 		if err != nil {
 			return DnaRpcInvalidParameter
 		}
@@ -593,7 +505,7 @@ func getDataFile(params []interface{}) map[string]interface{} {
 	switch params[0].(type) {
 	case string:
 		str := params[0].(string)
-		hex, err := hex.DecodeString(str)
+		hex, err := HexStringToBytesReverse(str)
 		if err != nil {
 			return DnaRpcInvalidParameter
 		}
@@ -619,4 +531,536 @@ func getDataFile(params []interface{}) map[string]interface{} {
 	default:
 		return DnaRpcInvalidParameter
 	}
+}
+
+var Wallet account.Client
+
+func getWalletDir() string {
+	home, _ := homedir.Dir()
+	return home + "/.wallet/"
+}
+
+func createWallet(params []interface{}) map[string]interface{} {
+	if len(params) < 1 {
+		return DnaRpcNil
+	}
+	var password []byte
+	switch params[0].(type) {
+	case string:
+		password = []byte(params[0].(string))
+	default:
+		return DnaRpcInvalidParameter
+	}
+	walletDir := getWalletDir()
+	if !FileExisted(walletDir) {
+		err := os.MkdirAll(walletDir, 0755)
+		if err != nil {
+			return DnaRpcInternalError
+		}
+	}
+	walletPath := walletDir + "wallet.dat"
+	if FileExisted(walletPath) {
+		return DnaRpcWalletAlreadyExists
+	}
+	_, err := account.Create(walletPath, password)
+	if err != nil {
+		return DnaRpcFailed
+	}
+	return DnaRpcSuccess
+}
+
+func openWallet(params []interface{}) map[string]interface{} {
+	if len(params) < 1 {
+		return DnaRpcNil
+	}
+	var password []byte
+	switch params[0].(type) {
+	case string:
+		password = []byte(params[0].(string))
+	default:
+		return DnaRpcInvalidParameter
+	}
+	resp := make(map[string]string)
+	walletPath := getWalletDir() + "wallet.dat"
+	if !FileExisted(walletPath) {
+		resp["success"] = "false"
+		resp["message"] = "wallet doesn't exist"
+		return DnaRpc(resp)
+	}
+	wallet, err := account.Open(walletPath, password)
+	if err != nil {
+		resp["success"] = "false"
+		resp["message"] = "password wrong"
+		return DnaRpc(resp)
+	}
+	Wallet = wallet
+	programHash, err := wallet.LoadStoredData("ProgramHash")
+	if err != nil {
+		resp["success"] = "false"
+		resp["message"] = "wallet file broken"
+		return DnaRpc(resp)
+	}
+	resp["success"] = "true"
+	resp["message"] = BytesToHexString(programHash)
+	return DnaRpc(resp)
+}
+
+func closeWallet(params []interface{}) map[string]interface{} {
+	Wallet = nil
+	return DnaRpcSuccess
+}
+
+func recoverWallet(params []interface{}) map[string]interface{} {
+	if len(params) < 2 {
+		return DnaRpcNil
+	}
+	var privateKey string
+	var walletPassword string
+	switch params[0].(type) {
+	case string:
+		privateKey = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[1].(type) {
+	case string:
+		walletPassword = params[1].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	walletDir := getWalletDir()
+	if !FileExisted(walletDir) {
+		err := os.MkdirAll(walletDir, 0755)
+		if err != nil {
+			return DnaRpcInternalError
+		}
+	}
+	walletName := fmt.Sprintf("wallet-%s-recovered.dat", time.Now().Format("2006-01-02-15-04-05"))
+	walletPath := walletDir + walletName
+	if FileExisted(walletPath) {
+		return DnaRpcWalletAlreadyExists
+	}
+	_, err := account.Recover(walletPath, []byte(walletPassword), privateKey)
+	if err != nil {
+		return DnaRpc("wallet recovery failed")
+	}
+
+	return DnaRpcSuccess
+}
+
+func getWalletKey(params []interface{}) map[string]interface{} {
+	if Wallet == nil {
+		return DnaRpc("open wallet first")
+	}
+	account, _ := Wallet.GetDefaultAccount()
+	encodedPublickKey, _ := account.PublicKey.EncodePoint(true)
+	resp := make(map[string]string)
+	resp["PublicKey"] = BytesToHexString(encodedPublickKey)
+	resp["PrivateKey"] = BytesToHexString(account.PrivateKey)
+	resp["ProgramHash"] = BytesToHexString(account.ProgramHash.ToArrayReverse())
+
+	return DnaRpc(resp)
+}
+
+func addAccount(params []interface{}) map[string]interface{} {
+	if Wallet == nil {
+		return DnaRpc("open wallet first")
+	}
+	account, err := Wallet.CreateAccount()
+	if err != nil {
+		return DnaRpc("create account error:" + err.Error())
+	}
+
+	if err := Wallet.CreateContract(account); err != nil {
+		return DnaRpc("create contract error:" + err.Error())
+	}
+
+	address, err := account.ProgramHash.ToAddress()
+	if err != nil {
+		return DnaRpc("generate address error:" + err.Error())
+	}
+
+	return DnaRpc(address)
+}
+
+func deleteAccount(params []interface{}) map[string]interface{} {
+	if len(params) < 1 {
+		return DnaRpcNil
+	}
+	var address string
+	switch params[0].(type) {
+	case string:
+		address = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	if Wallet == nil {
+		return DnaRpc("open wallet first")
+	}
+	programHash, err := ToScriptHash(address)
+	if err != nil {
+		return DnaRpc("invalid address:" + err.Error())
+	}
+	if err := Wallet.DeleteAccount(programHash); err != nil {
+		return DnaRpc("Delete account error:" + err.Error())
+	}
+	if err := Wallet.DeleteContract(programHash); err != nil {
+		return DnaRpc("Delete contract error:" + err.Error())
+	}
+	if err := Wallet.DeleteCoinsData(programHash); err != nil {
+		return DnaRpc("Delete coins error:" + err.Error())
+	}
+
+	return DnaRpc(true)
+}
+
+func registerAsset(params []interface{}) map[string]interface{} {
+	if len(params) < 2 {
+		return DnaRpcNil
+	}
+	var name, value string
+	switch params[0].(type) {
+	case string:
+		name = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[1].(type) {
+	case string:
+		value = params[1].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	description := name
+	txn, err := sdk.MakeRegTransaction(Wallet, name, value, description)
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+	if errCode := VerifyAndSendTx(txn); errCode != ErrNoError {
+		return DnaRpc("error: " + errCode.Error())
+	}
+	txHash := txn.Hash()
+	return DnaRpc(BytesToHexString(txHash.ToArrayReverse()))
+}
+
+func issueAsset(params []interface{}) map[string]interface{} {
+	if len(params) < 3 {
+		return DnaRpcNil
+	}
+	var asset, address, value string
+	switch params[0].(type) {
+	case string:
+		asset = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[1].(type) {
+	case string:
+		address = params[1].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[2].(type) {
+	case string:
+		value = params[2].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+
+	tmp, err := HexStringToBytesReverse(asset)
+	if err != nil {
+		return DnaRpc("error: invalid asset ID")
+	}
+	var assetID Uint256
+	if err := assetID.Deserialize(bytes.NewReader(tmp)); err != nil {
+		return DnaRpc("error: invalid asset hash")
+	}
+	txn, err := sdk.MakeIssueTransaction(Wallet, assetID, address, value)
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+
+	if errCode := VerifyAndSendTx(txn); errCode != ErrNoError {
+		return DnaRpc("error: " + errCode.Error())
+	}
+	txHash := txn.Hash()
+	return DnaRpc(BytesToHexString(txHash.ToArrayReverse()))
+}
+
+func sendToAddress(params []interface{}) map[string]interface{} {
+	if len(params) < 3 {
+		return DnaRpcNil
+	}
+	var asset, address, value string
+	switch params[0].(type) {
+	case string:
+		asset = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[1].(type) {
+	case string:
+		address = params[1].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[2].(type) {
+	case string:
+		value = params[2].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	if Wallet == nil {
+		return DnaRpc("error : wallet is not opened")
+	}
+
+	batchOut := sdk.BatchOut{
+		Address: address,
+		Value:   value,
+	}
+	tmp, err := HexStringToBytesReverse(asset)
+	if err != nil {
+		return DnaRpc("error: invalid asset ID")
+	}
+	var assetID Uint256
+	if err := assetID.Deserialize(bytes.NewReader(tmp)); err != nil {
+		return DnaRpc("error: invalid asset hash")
+	}
+	txn, err := sdk.MakeTransferTransaction(Wallet, assetID, batchOut)
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+
+	if errCode := VerifyAndSendTx(txn); errCode != ErrNoError {
+		return DnaRpc("error: " + errCode.Error())
+	}
+	txHash := txn.Hash()
+	return DnaRpc(BytesToHexString(txHash.ToArrayReverse()))
+}
+
+func lockAsset(params []interface{}) map[string]interface{} {
+	if len(params) < 3 {
+		return DnaRpcNil
+	}
+	var asset, value string
+	var height float64
+	switch params[0].(type) {
+	case string:
+		asset = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[1].(type) {
+	case string:
+		value = params[1].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[2].(type) {
+	case float64:
+		height = params[2].(float64)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	if Wallet == nil {
+		return DnaRpc("error: invalid wallet instance")
+	}
+
+	accts := Wallet.GetAccounts()
+	if len(accts) > 1 {
+		return DnaRpc("error: does't support multi-addresses wallet locking asset")
+	}
+
+	tmp, err := HexStringToBytesReverse(asset)
+	if err != nil {
+		return DnaRpc("error: invalid asset ID")
+	}
+	var assetID Uint256
+	if err := assetID.Deserialize(bytes.NewReader(tmp)); err != nil {
+		return DnaRpc("error: invalid asset hash")
+	}
+
+	txn, err := sdk.MakeLockAssetTransaction(Wallet, assetID, value, uint32(height))
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+
+	txnHash := txn.Hash()
+	if errCode := VerifyAndSendTx(txn); errCode != ErrNoError {
+		return DnaRpc(errCode.Error())
+	}
+	return DnaRpc(BytesToHexString(txnHash.ToArrayReverse()))
+}
+
+func sendChatMessage(params []interface{}) map[string]interface{} {
+	if len(params) < 1 {
+		return DnaRpcNil
+	}
+	var message string
+	switch params[0].(type) {
+	case string:
+		message = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	ledger.DefaultLedger.Blockchain.BCEvents.Notify(events.EventChatMessage, message)
+	if err := node.Xmit(message); err != nil {
+		return DnaRpcInternalError
+	}
+
+	return DnaRpcSuccess
+}
+
+func signMultisigTransaction(params []interface{}) map[string]interface{} {
+	if len(params) < 1 {
+		return DnaRpcNil
+	}
+	var signedrawtxn string
+	switch params[0].(type) {
+	case string:
+		signedrawtxn = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+
+	rawtxn, _ := HexStringToBytes(signedrawtxn)
+	var txn tx.Transaction
+	txn.Deserialize(bytes.NewReader(rawtxn))
+	if len(txn.Programs) <= 0 {
+		return DnaRpc("missing the first signature")
+	}
+
+	found := false
+	programHashes := txn.ParseTransactionCode()
+	for _, hash := range programHashes {
+		acct := Wallet.GetAccountByProgramHash(hash)
+		if acct != nil {
+			found = true
+			sig, _ := signature.SignBySigner(&txn, acct)
+			txn.AppendNewSignature(sig)
+		}
+	}
+	if !found {
+		return DnaRpc("error: no available account detected")
+	}
+
+	_, needsig, err := txn.ParseTransactionSig()
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+	if needsig == 0 {
+		txnHash := txn.Hash()
+		if errCode := VerifyAndSendTx(&txn); errCode != ErrNoError {
+			return DnaRpc(errCode.Error())
+		}
+		return DnaRpc(BytesToHexString(txnHash.ToArrayReverse()))
+	} else {
+		var buffer bytes.Buffer
+		txn.Serialize(&buffer)
+		return DnaRpc(BytesToHexString(buffer.Bytes()))
+	}
+}
+
+func createMultisigTransaction(params []interface{}) map[string]interface{} {
+	if len(params) < 4 {
+		return DnaRpcNil
+	}
+	var asset, from, address, value string
+	switch params[0].(type) {
+	case string:
+		asset = params[0].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[1].(type) {
+	case string:
+		from = params[1].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[2].(type) {
+	case string:
+		address = params[2].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	switch params[3].(type) {
+	case string:
+		value = params[3].(string)
+	default:
+		return DnaRpcInvalidParameter
+	}
+	if Wallet == nil {
+		return DnaRpc("error : wallet is not opened")
+	}
+
+	batchOut := sdk.BatchOut{
+		Address: address,
+		Value:   value,
+	}
+	tmp, err := HexStringToBytesReverse(asset)
+	if err != nil {
+		return DnaRpc("error: invalid asset ID")
+	}
+	var assetID Uint256
+	if err := assetID.Deserialize(bytes.NewReader(tmp)); err != nil {
+		return DnaRpc("error: invalid asset hash")
+	}
+	txn, err := sdk.MakeMultisigTransferTransaction(Wallet, assetID, from, batchOut)
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+
+	_, needsig, err := txn.ParseTransactionSig()
+	if err != nil {
+		return DnaRpc("error: " + err.Error())
+	}
+	if needsig == 0 {
+		txnHash := txn.Hash()
+		if errCode := VerifyAndSendTx(txn); errCode != ErrNoError {
+			return DnaRpc(errCode.Error())
+		}
+		return DnaRpc(BytesToHexString(txnHash.ToArrayReverse()))
+	} else {
+		var buffer bytes.Buffer
+		txn.Serialize(&buffer)
+		return DnaRpc(BytesToHexString(buffer.Bytes()))
+	}
+}
+
+func getBalance(params []interface{}) map[string]interface{} {
+	if Wallet == nil {
+		return DnaRpc("open wallet first")
+	}
+	type AssetInfo struct {
+		AssetID string
+		Value   string
+	}
+	balances := make(map[string][]*AssetInfo)
+	accounts := Wallet.GetAccounts()
+	coins := Wallet.GetCoins()
+	for _, account := range accounts {
+		assetList := []*AssetInfo{}
+		programHash := account.ProgramHash
+		for _, coin := range coins {
+			if programHash == coin.Output.ProgramHash {
+				var existed bool
+				assetString := BytesToHexString(coin.Output.AssetID.ToArray())
+				for _, info := range assetList {
+					if info.AssetID == assetString {
+						info.Value += coin.Output.Value.String()
+						existed = true
+						break
+					}
+				}
+				if !existed {
+					assetList = append(assetList, &AssetInfo{AssetID: assetString, Value: coin.Output.Value.String()})
+				}
+			}
+		}
+		address, _ := programHash.ToAddress()
+		balances[address] = assetList
+	}
+
+	return DnaRpc(balances)
 }

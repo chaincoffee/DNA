@@ -164,7 +164,7 @@ func (ds *DbftService) CheckSignatures() error {
 	return nil
 }
 
-func (ds *DbftService) CreateBookkeepingTransaction(nonce uint64) *tx.Transaction {
+func (ds *DbftService) CreateBookkeepingTransaction(txnFeeOutputs []*tx.TxOutput, nonce uint64) *tx.Transaction {
 	log.Debug()
 	//TODO: sysfee
 	bookKeepingPayload := &payload.BookKeeping{
@@ -177,7 +177,7 @@ func (ds *DbftService) CreateBookkeepingTransaction(nonce uint64) *tx.Transactio
 		Attributes:     []*tx.TxAttribute{},
 		UTXOInputs:     []*tx.UTXOTxInput{},
 		BalanceInputs:  []*tx.BalanceTxInput{},
-		Outputs:        []*tx.TxOutput{},
+		Outputs:        txnFeeOutputs,
 		Programs:       []*program.Program{},
 	}
 }
@@ -341,7 +341,8 @@ func (ds *DbftService) GetUnverifiedTxs(txs []*tx.Transaction) []*tx.Transaction
 
 func (ds *DbftService) VerifyTxs(txs []*tx.Transaction) error {
 	for _, t := range txs {
-		if errCode := ds.localNet.AppendTxnPool(t); errCode != ErrNoError {
+		// do not do transaction pool verification
+		if errCode := ds.localNet.AppendTxnPool(t, false); errCode != ErrNoError {
 			return errors.New("[dbftService] VerifyTxs failed when AppendTxnPool.")
 		}
 	}
@@ -390,9 +391,22 @@ func (ds *DbftService) PrepareRequestReceived(payload *msg.ConsensusPayload, mes
 		log.Warn("PrepareRequestReceived VerifySignature failed.", err)
 		return
 	}
-
 	ds.context.Signatures = make([][]byte, len(ds.context.BookKeepers))
 	ds.context.Signatures[payload.BookKeeperIndex] = message.Signature
+
+	//check if there's double spent transaction in prepare request message
+	inputs := make(map[string]bool)
+	for _, txn := range ds.context.Transactions {
+		if txn.TxType == tx.TransferAsset {
+			for _, utxoInput := range txn.UTXOInputs {
+				if _, ok := inputs[utxoInput.ToString()]; ok {
+					log.Warn("PrepareRequestReceived failed, double spent transaction detected")
+					return
+				}
+				inputs[utxoInput.ToString()] = true
+			}
+		}
+	}
 
 	//check if the transactions received are verified. If it already exists in transaction pool
 	//then no need to verify it again. Otherwise, verify it.
@@ -487,12 +501,12 @@ func (ds *DbftService) SignAndRelay(payload *msg.ConsensusPayload) {
 	ctCxt := ct.NewContractContext(payload)
 
 	ret := ds.Client.Sign(ctCxt)
-	if ret == false {
-		log.Warn("[SignAndRelay] Sign contract failure")
+	if ret != nil {
+		log.Error("[SignAndRelay] Sign contract failure")
 	}
 	prog := ctCxt.GetPrograms()
 	if prog == nil {
-		log.Warn("[SignAndRelay] Get programe failure")
+		log.Error("[SignAndRelay] Get programe failure")
 	}
 	payload.SetPrograms(prog)
 	ds.localNet.Xmit(payload)
@@ -546,7 +560,27 @@ func (ds *DbftService) Timeout() {
 			//TODO: add policy
 			//TODO: add max TX limitation
 
-			txBookkeeping := ds.CreateBookkeepingTransaction(ds.context.Nonce)
+			account, _ := ds.Client.GetAccount(ds.context.BookKeepers[ds.context.BookKeeperIndex]) //TODO: handle error
+			txnFeeOutputs := []*tx.TxOutput{}
+			// calculate transaction fee when fee is configured and doesn't equal to 0.0,
+			if fee, ok := config.Parameters.TransactionFee["Transfer"]; ok && (fee != 0.0) {
+				for _, txn := range transactionsPool {
+					txnResult, _ := txn.GetTransactionResults()
+					for assetID, value := range txnResult {
+						//TODO: check system assetID
+						if value > 0 {
+							tmpOutput := tx.TxOutput{
+								AssetID:     assetID,
+								Value:       value,
+								ProgramHash: account.ProgramHash,
+							}
+							txnFeeOutputs = append(txnFeeOutputs, &tmpOutput)
+						}
+					}
+				}
+			}
+
+			txBookkeeping := ds.CreateBookkeepingTransaction(txnFeeOutputs, ds.context.Nonce)
 			//add book keeping transaction first
 			ds.context.Transactions = append(ds.context.Transactions, txBookkeeping)
 			//add transactions from transaction pool
@@ -556,7 +590,6 @@ func (ds *DbftService) Timeout() {
 			ds.context.header = nil
 			//build block and sign
 			block := ds.context.MakeHeader()
-			account, _ := ds.Client.GetAccount(ds.context.BookKeepers[ds.context.BookKeeperIndex]) //TODO: handle error
 			ds.context.Signatures[ds.context.BookKeeperIndex], _ = sig.SignBySigner(block, account)
 		}
 		payload := ds.context.MakePrepareRequest()

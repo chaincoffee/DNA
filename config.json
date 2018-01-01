@@ -18,15 +18,18 @@
     "HttpRestPort": 20334,
     "HttpWsPort":20335,
     "HttpJsonPort": 20336,
-    "HttpLocalPort": 20337,
     "NoticeServerUrl":"",
     "OauthServerUrl":"",
     "NodePort": 20338,
+    "NodeType": "service",
     "PrintLevel": 1,
     "IsTLS": false,
     "CertPath": "./sample-cert.pem",
     "KeyPath": "./sample-cert-key.pem",
     "CAPath": "./sample-ca.pem",
-    "MultiCoreNum": 4
+    "MultiCoreNum": 4,
+    "TransactionFee": {
+	"Transfer": 0.0000
+    }
   }
 }

@@ -20,15 +20,17 @@ type NodeAddr struct {
 	ID       uint64 // Unique ID
 }
 
-// The node capability type
+// The node type flag
 const (
 	VERIFYNODE  = 1
 	SERVICENODE = 2
+	DATANODE    = 3
 )
 
 const (
 	VERIFYNODENAME  = "verify"
 	SERVICENODENAME = "service"
+	DATANODENAME    = "data"
 )
 
 const (
@@ -97,7 +99,7 @@ type Noder interface {
 	GetHeight() uint64
 	GetConnectionCnt() uint
 	GetTxnPool(bool) map[common.Uint256]*transaction.Transaction
-	AppendTxnPool(*transaction.Transaction) ErrCode
+	AppendTxnPool(*transaction.Transaction, bool) ErrCode
 	ExistedID(id common.Uint256) bool
 	ReqNeighborList()
 	DumpInfo()

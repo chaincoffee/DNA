@@ -25,20 +25,47 @@ const (
 	ErrTxHashDuplicate      ErrCode = 45010
 	ErrStateUpdaterVaild    ErrCode = 45011
 	ErrSummaryAsset         ErrCode = 45012
-	ErrXmitFail             ErrCode = 45013
+	ErrLockedAsset          ErrCode = 45013
+	ErrDuplicateLockAsset   ErrCode = 45014
+	ErrXmitFail             ErrCode = 45015
 )
 
 func (err ErrCode) Error() string {
 	switch err {
 	case ErrNoCode:
-		return "No error code"
+		return "no error code"
 	case ErrNoError:
-		return "Not an error"
+		return "not an error"
 	case ErrUnknown:
-		return "Unknown error"
+		return "unknown error"
 	case ErrDuplicatedTx:
-		return "There are duplicated Transactions"
-
+		return "duplicated transaction detected"
+	case ErrDuplicateInput:
+		return "duplicated transaction input detected"
+	case ErrAssetPrecision:
+		return "invalid asset precision"
+	case ErrTransactionBalance:
+		return "transaction balance unmatched"
+	case ErrAttributeProgram:
+		return "attribute program error"
+	case ErrTransactionContracts:
+		return "invalid transaction contract"
+	case ErrTransactionPayload:
+		return "invalid transaction payload"
+	case ErrDoubleSpend:
+		return "double spent transaction detected"
+	case ErrTxHashDuplicate:
+		return "duplicated transaction hash detected"
+	case ErrStateUpdaterVaild:
+		return "invalid state updater"
+	case ErrSummaryAsset:
+		return "invalid summary asset"
+	case ErrLockedAsset:
+		return "locked asset unusable"
+	case ErrDuplicateLockAsset:
+		return "duplicate locking asset transaction detected"
+	case ErrXmitFail:
+		return "transmit error"
 	}
 
 	return fmt.Sprintf("Unknown error? Error code = %d", err)

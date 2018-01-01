@@ -64,11 +64,11 @@ func IsEqualBytes(b1 []byte, b2 []byte) bool {
 	return true
 }
 
-func ToHexString(data []byte) string {
+func BytesToHexString(data []byte) string {
 	return hex.EncodeToString(data)
 }
 
-func HexToBytes(value string) ([]byte, error) {
+func HexStringToBytes(value string) ([]byte, error) {
 	return hex.DecodeString(value)
 }
 
@@ -79,7 +79,7 @@ func BytesReverse(u []byte) []byte {
 	return u
 }
 
-func HexToBytesReverse(value string) ([]byte, error) {
+func HexStringToBytesReverse(value string) ([]byte, error) {
 	u, err := hex.DecodeString(value)
 	if err != nil {
 		return u, err
