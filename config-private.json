@@ -1,0 +1,32 @@
+﻿{
+  "Configuration": {
+    "Magic": 7630401,
+    "Version": 23,
+    "SeedList": [
+      "10.0.0.1:10338",
+      "10.0.0.2:10338",
+      "10.0.0.3:10338"
+    ],
+    "BookKeepers": [
+      "039d7d37be7f603a60e38dd4e390ed2727e329842c0423428878eb7f3f156011df",
+      "0275743bd1a0c8bc60d2180eb84efe01af6ca83182b5a354a3bedf17731ab7f96b",
+      "02513b227fb07e9eacc6a7784d25bd4d7f87a4f99c76858fd42f4c9e3847e25a9a",
+      "036076c654b4ef19aea5a0a1a5f7046c43d638bcd25ea249557170e672030a74dc"
+    ],
+    "HttpInfoPort": 20333,
+    "HttpInfoStart": true,
+    "HttpRestPort": 20334,
+    "HttpWsPort":20335,
+    "HttpJsonPort": 20336,
+    "HttpLocalPort": 20337,
+    "NoticeServerUrl":"",
+    "OauthServerUrl":"",
+    "NodePort": 20338,
+    "PrintLevel": 1,
+    "IsTLS": false,
+    "CertPath": "./sample-cert.pem",
+    "KeyPath": "./sample-cert-key.pem",
+    "CAPath": "./sample-ca.pem",
+    "MultiCoreNum": 4
+  }
+}
